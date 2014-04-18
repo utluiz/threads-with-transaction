@@ -1,7 +1,7 @@
 Threads with Transaction
 ========================
 
-An JavaSE example of multiples threads sharing a single JTA transaction using Atomikos.
+A JavaSE example of multiples threads sharing a single JTA transaction using Atomikos.
 
 There are two simple tests for success and failure.
 
