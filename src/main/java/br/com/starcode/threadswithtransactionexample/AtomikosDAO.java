@@ -16,6 +16,9 @@ import javax.transaction.xa.XAResource;
 
 public class AtomikosDAO {
 
+	/**
+	 * Reset table content with 5 rows to be used each one for a different thread
+	 */
 	public static void resetTable() {
 		try {
 			Connection c = AtomikosDataSource.getDS().getConnection();
@@ -33,6 +36,10 @@ public class AtomikosDAO {
 		}
 	}
 	
+	/**
+	 * Count haw many rows are with ok flag
+	 * @return
+	 */
 	public static int countOk() {
 		try {
 			Connection c = AtomikosDataSource.getDS().getConnection();
@@ -50,6 +57,10 @@ public class AtomikosDAO {
 		return 0;
 	}
 
+	/**
+	 * Processing thread.
+	 * Tries to update the row with "ok"
+	 */
 	private static class Processamento implements Callable<Integer> {
 
 		private int id;
@@ -66,56 +77,79 @@ public class AtomikosDAO {
 			if (falhar) {
 				throw new RuntimeException("Falhou inesperadamente!");
 			}
-			//prepara conexão
-			XAConnection xac = null;
-			Connection c = null;
+			
+			//enlist xa connection
+			XAConnection xac = AtomikosDataSource.getDS().getXaDataSource().getXAConnection();
 			synchronized (transaction) {
-				
-				//AtomikosDataSource.getTM().begin();
-				xac = AtomikosDataSource.getDS().getXaDataSource().getXAConnection();
 				transaction.enlistResource(xac.getXAResource());
-				c = xac.getConnection(); 
-				
 			}
-
-			//executa normalmente
+			
+			//normal execution, update row with OK
+			Connection c = xac.getConnection();
 			Statement s = c.createStatement();
-			s.executeUpdate("update teste set processado = '" + (falhar ? "falha" : "ok") + "' where id = " + id);
+			s.executeUpdate("update teste set processado = 'ok' where id = " + id);
 			s.close();
 			c.close();
 			
-			//transaction.delistResource(xac.getXAResource(), XAResource.TMSUCCESS);
+			//delist xa connection
+			synchronized (transaction) {
+				transaction.delistResource(xac.getXAResource(), XAResource.TMSUCCESS);
+			}
 			return id;
 		}
 		
 	}
 
+	/**
+	 * Starts 5 threads. Each thread update a row of the TEST table with OK. 
+	 * @param falhar If true, the last thread will throw an exception.
+	 * @return Total threads that result in success
+	 */
 	public static int processar(boolean falhar) {
-		int ok = -1;
+		int ok = 0;
 		Transaction transaction = null;
 		try {
+			
+			//start transaction
+			AtomikosDataSource.getTM().begin();
 			transaction = AtomikosDataSource.getTM().getTransaction();
 
+			//create thread pool
 			ExecutorService executor = Executors.newFixedThreadPool(5);
 			List<Callable<Integer>> processos = new ArrayList<Callable<Integer>>();
+			
+			//create 5 threads, passing the main transaction as argument
 			for (int i = 0; i < 5; i++) {
-				System.out.println(i);
 				processos.add(new Processamento(i + 1, i == 4 && falhar, transaction));
 			}
-			System.out.println("### Iniciando ");
+			
+			//execute threads and wait
 			List<Future<Integer>> futures = executor.invokeAll(processos);
-			System.out.println("### OK ");
-			ok = countOk(); 
+			
+			//count the result; get() will fail if thread threw an exception
+			Throwable ex = null;
 			for (Future<Integer> future : futures) {
-				System.out.println("Thread " + future.get() + " sucesso!");
+				try {
+					int threadId = future.get();
+					System.out.println("Thread " + threadId + " sucesso!");
+					ok++; 
+				} catch (Throwable e) {
+					ex = e;
+				}
+			}
+			
+			if (ex != null) {
+				throw ex;
 			}
 
-			
+			//finish transaction normally
 			transaction.commit();
-			System.out.println("Sucesso geral!");
+			
 		} catch (Throwable e) {
+			
 			e.printStackTrace();
 			try {
+				//try to rollback
 				if (transaction != null) {
 					AtomikosDataSource.getTM().rollback();
 				}
@@ -126,7 +160,9 @@ public class AtomikosDAO {
 			} catch (SystemException e1) {
 				e1.printStackTrace();
 			}
+			
 		}
 		return ok;
 	}
+	
 }
